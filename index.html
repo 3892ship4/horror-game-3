@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Комната автоспорта — Хоррор</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { overflow: hidden; touch-action: none; background: #000; font-family: 'Segoe UI', Arial, sans-serif; }
+    canvas { display: block; }
+    #ui { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 8px 14px; border-radius: 6px; font-size: 12px; pointer-events: none; z-index: 10; border-left: 3px solid #c0392b; }
+    #ui h2 { font-size: 14px; font-weight: 300; }
+    #ui p { font-size: 11px; opacity: 0.8; }
+    #status { position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); color: #eee; background: rgba(0,0,0,0.8); padding: 6px 16px; border-radius: 20px; font-size: 12px; text-align: center; pointer-events: none; z-index: 10; white-space: nowrap; backdrop-filter: blur(4px); border: 1px solid #444; }
+    #status .highlight { color: #e67e22; }
+    #controls { position: absolute; bottom: 60px; right: 10px; color: #666; font-size: 9px; background: rgba(0,0,0,0.5); padding: 4px 10px; border-radius: 4px; pointer-events: none; z-index: 10; }
+    #message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff4444; background: rgba(0,0,0,0.9); padding: 20px 30px; border-radius: 12px; font-size: 22px; font-weight: bold; border: 2px solid #ff2222; pointer-events: none; z-index: 20; display: none; text-align: center; }
+    #message small { display: block; font-size: 14px; font-weight: normal; margin-top: 10px; color: #ccc; }
+    #victory { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; justify-content: center; align-items: center; z-index: 30; flex-direction: column; color: white; }
+    #victory h1 { font-size: 40px; color: #f1c40f; text-shadow: 0 0 30px #f1c40f80; }
+    #victory p { font-size: 18px; opacity: 0.9; }
+    #joystick-area { position: absolute; bottom: 80px; left: 20px; width: 120px; height: 120px; border-radius: 60px; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.15); touch-action: none; z-index: 15; display: block; }
+    #joystick-area::after { content: '⬆'; position: absolute; top: 5px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.2); font-size: 18px; }
+    #joystick-area::before { content: '⬇'; position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.2); font-size: 18px; }
+    .joystick-dot { position: absolute; width: 40px; height: 40px; border-radius: 20px; background: rgba(255,255,255,0.15); top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="ui"><h2>🏁 КОМНАТА АВТОСПОРТА</h2><p>Ключи: <span id="keysCount">0</span> / 3</p></div>
+  <div id="status"><span id="statusText">Исследуйте комнату</span></div>
+  <div id="controls">🖱️ Тап по экрану — осмотр | Джойстик — движение</div>
+  <div id="message"></div>
+  <div id="victory"><h1>🏆 ВЫХОД СВОБОДЕН</h1><p>Вы пережили все аномалии!</p></div>
+  <div id="joystick-area"><div class="joystick-dot" id="joystick-dot"></div></div>
+  <script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.126.0/build/three.module.js" } }
+  </script>
+  <script type="module">
+  import * as THREE from 'three';
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0a);
+  scene.fog = new THREE.Fog(0x0a0a0a, 5, 12);
+  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 20);
+  camera.position.set(2.5, 1.6, 3.5);
+  camera.rotation.y = -0.5;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+  document.body.prepend(renderer.domElement);
+  let pitch = -0.1, yaw = -0.5;
+  let moveX = 0, moveZ = 0;
+  let isHiding = false, isGameOver = false, isVictory = false, keysCollected = 0;
+  const joystickArea = document.getElementById('joystick-area');
+  const joystickDot = document.getElementById('joystick-dot');
+  let joystickActive = false, joystickX = 0, joystickY = 0;
+  joystickArea.addEventListener('touchstart', (e) => { e.preventDefault(); joystickActive = true; updateJoystick(e); });
+  joystickArea.addEventListener('touchmove', (e) => { e.preventDefault(); if (joystickActive) updateJoystick(e); });
+  joystickArea.addEventListener('touchend', (e) => { e.preventDefault(); joystickActive = false; joystickX = 0; joystickY = 0; joystickDot.style.transform = 'translate(-50%, -50%)'; moveX = 0; moveZ = 0; });
+  function updateJoystick(e) {
+    const touch = e.touches[0];
+    const rect = joystickArea.getBoundingClientRect();
+    const cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
+    let dx = touch.clientX - cx, dy = touch.clientY - cy;
+    const maxDist = rect.width/2 - 10;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist > maxDist) { dx = dx / dist * maxDist; dy = dy / dist * maxDist; }
+    joystickDot.style.transform = `translate(${-50 + dx/maxDist*50}%, ${-50 + dy/maxDist*50}%)`;
+    joystickX = dx / maxDist; joystickY = dy / maxDist;
+    moveX = joystickX; moveZ = -joystickY;
+  }
+  let touchRotate = false, lastTouchX = 0;
+  renderer.domElement.addEventListener('touchstart', (e) => { if (e.touches.length === 1 && !joystickActive) { touchRotate = true; lastTouchX = e.touches[0].clientX; } });
+  renderer.domElement.addEventListener('touchmove', (e) => { if (touchRotate && e.touches.length === 1) { const deltaX = e.touches[0].clientX - lastTouchX; yaw += deltaX * 0.005; lastTouchX = e.touches[0].clientX; } });
+  renderer.domElement.addEventListener('touchend', () => { touchRotate = false; });
+  const ambientLight = new THREE.AmbientLight(0x222233, 0.3);
+  scene.add(ambientLight);
+  const mainLight = new THREE.DirectionalLight(0xffdd99, 0.9);
+  mainLight.position.set(3, 5, 4);
+  mainLight.castShadow = true;
+  scene.add(mainLight);
+  const lampLight = new THREE.PointLight(0xffaa66, 0.8, 8);
+  lampLight.position.set(0, 2.8, -0.5);
+  scene.add(lampLight);
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x2c3e50, roughness: 0.8 });
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 });
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.position.y = 0;
+  floor.receiveShadow = true;
+  scene.add(floor);
+  [
+    { x: 0, z: -2.5, ry: 0 },
+    { x: 0, z: 2.5, ry: Math.PI },
+    { x: -2.5, z: 0, ry: Math.PI/2 },
+    { x: 2.5, z: 0, ry: -Math.PI/2 }
+  ].forEach(pos => {
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(5, 3), wallMat);
+    wall.position.set(pos.x, 1.5, pos.z);
+    wall.rotation.y = pos.ry;
+    wall.receiveShadow = true;
+    scene.add(wall);
+  });
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), new THREE.MeshStandardMaterial({ color: 0x111122, roughness: 0.9 }));
+  ceiling.rotation.x = Math.PI/2;
+  ceiling.position.y = 3;
+  scene.add(ceiling);
+  const bedGroup = new THREE.Group();
+  const bedBase = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 2.2), new THREE.MeshStandardMaterial({ color: 0x34495e }));
+  bedBase.position.y = 0.2;
+  bedBase.castShadow = true;
+  bedGroup.add(bedBase);
+  const mattress = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.15, 2.0), new THREE.MeshStandardMaterial({ color: 0x2c3e50 }));
+  mattress.position.y = 0.45;
+  mattress.castShadow = true;
+  bedGroup.add(mattress);
+  bedGroup.position.set(1.8, 0, 1.5);
+  scene.add(bedGroup);
+  const closetGroup = new THREE.Group();
+  const closetBody = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.2, 0.6), new THREE.MeshStandardMaterial({ color: 0x3d3d3d }));
+  closetBody.position.y = 1.1;
+  closetBody.castShadow = true;
+  closetGroup.add(closetBody);
+  const closetDoor = new THREE.Mesh(new THREE.BoxGeometry(0.75, 1.8, 0.05), new THREE.MeshStandardMaterial({ color: 0x5d5d5d }));
+  closetDoor.position.set(0, 1.1, 0.31);
+  closetGroup.add(closetDoor);
+  closetGroup.position.set(-1.8, 0, 1.2);
+  scene.add(closetGroup);
+  const tableGroup = new THREE.Group();
+  const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 0.8), new THREE.MeshStandardMaterial({ color: 0x4a3f35 }));
+  tableTop.position.y = 0.8;
+  tableTop.castShadow = true;
+  tableGroup.add(tableTop);
+  [
+    [-0.5, -0.3], [0.5, -0.3],
+    [-0.5, 0.3], [0.5, 0.3]
+  ].forEach(p => {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.7), new THREE.MeshStandardMaterial({ color: 0x333333 }));
+    leg.position.set(p[0], 0.35, p[1]);
+    leg.castShadow = true;
+    tableGroup.add(leg);
+  });
+  tableGroup.position.set(0, 0, -0.5);
+  scene.add(tableGroup);
+  const cupGroup = new THREE.Group();
+  const cupBase = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.12, 0.2, 12), new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.7, roughness: 0.3 }));
+  cupBase.position.y = 0.1;
+  cupGroup.add(cupBase);
+  cupGroup.position.set(0.25, 0.88, -0.35);
+  scene.add(cupGroup);
+  const paintingMat = new THREE.MeshStandardMaterial({ color: 0x8e44ad, emissive: new THREE.Color(0x000000) });
+  const painting = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.5), paintingMat);
+  painting.position.set(-2.4, 1.8, -0.8);
+  painting.rotation.y = 0.3;
+  scene.add(painting);
+  const clockMat = new THREE.MeshStandardMaterial({ color: 0xecf0f1 });
+  const clock = new THREE.Mesh(new THREE.CircleGeometry(0.3, 16), clockMat);
+  clock.position.set(2.3, 2.2, -1.5);
+  clock.rotation.y = -0.2;
+  scene.add(clock);
+  const radioMat = new THREE.MeshStandardMaterial({ color: 0x2c3e50 });
+  const radio = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.2), radioMat);
+  radio.position.set(-0.25, 0.88, -0.55);
+  scene.add(radio);
+  const mirrorMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.1, metalness: 0.9 });
+  const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.8), mirrorMat);
+  mirror.position.set(0, 1.8, 2.48);
+  scene.add(mirror);
+  const doorMat = new THREE.MeshStandardMaterial({ color: 0x5d4037 });
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 2.2), doorMat);
+  door.position.set(0, 1.1, -2.48);
+  scene.add(door);
+  const doorHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.1, 8), new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.6 }));
+  doorHandle.position.set(0.3, 1.1, -2.43);
+  doorHandle.rotation.x = Math.PI/2;
+  scene.add(doorHandle);
+  const keyMat = new THREE.MeshStandardMaterial({ color: 0xffaa00, metalness: 0.7, roughness: 0.3 });
+  const keyPositions = [
+    { x: -0.5, y: 0.3, z: 1.0 },
+    { x: 1.2, y: 0.9, z: -0.2 },
+    { x: -1.5, y: 0.3, z: 1.8 }
+  ];
+  const keysObjs = [];
+  keyPositions.forEach(pos => {
+    const key = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.02, 8, 12), keyMat);
+    key.position.set(pos.x, pos.y, pos.z);
+    key.rotation.x = Math.random() * Math.PI;
+    key.rotation.z = Math.random() * Math.PI;
+    key.castShadow = true;
+    scene.add(key);
+    keysObjs.push({ mesh: key, collected: false, pos: pos });
+  });
+  let anomalyActive = false, anomalyTimer = null;
+  function startAnomaly() {
+    if (anomalyActive || isGameOver || isVictory) return;
+    anomalyActive = true;
+    const types = ['red_painting', 'flicker', 'radio', 'clock', 'cup', 'shadow'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    document.getElementById('statusText').innerHTML = '⚠️ <span class="highlight">АНОМАЛИЯ!</span> Спрячься!';
+    switch(type) {
+      case 'red_painting':
+        paintingMat.emissive.setHex(0xff0000);
+        setTimeout(() => paintingMat.emissive.setHex(0x000000), 3000);
+        break;
+      case 'flicker':
+        let f = 0;
+        const fi = setInterval(() => {
+          lampLight.intensity = lampLight.intensity > 0.5 ? 0.1 : 0.8;
+          f++;
+          if (f > 6) { clearInterval(fi); lampLight.intensity = 0.8; }
+        }, 150);
+        break;
+      case 'cup':
+        cupGroup.position.set(0.25 + (Math.random()-0.5)*0.5, 0.88, -0.35 + (Math.random()-0.5)*0.5);
+        setTimeout(() => cupGroup.position.copy(cupGroup.userData.originalPos || new THREE.Vector3(0.25, 0.88, -0.35)), 3000);
+        break;
+    }
+    setTimeout(() => {
+      if (!isHiding && anomalyActive) {
+        gameOver();
+      }
+      anomalyActive = false;
+      document.getElementById('statusText').innerHTML = 'Исследуйте комнату';
+    }, 5000);
+  }
+  function gameOver() {
+    if (isGameOver) return;
+    isGameOver = true;
+    document.getElementById('message').innerHTML = '💀 ВЫ УМЕРЛИ<small>Аномалия нашла вас...</small>';
+    document.getElementById('message').style.display = 'block';
+    setTimeout(() => location.reload(), 3000);
+  }
+  function checkKeys() {
+    const pos = camera.position;
+    keysObjs.forEach(k => {
+      if (k.collected) return;
+      const dist = pos.distanceTo(k.mesh.position);
+      if (dist < 0.5) {
+        k.collected = true;
+        scene.remove(k.mesh);
+        keysCollected++;
+        document.getElementById('keysCount').textContent = keysCollected;
+        if (keysCollected === 3) {
+          document.getElementById('statusText').innerHTML = '✅ Все ключи собраны! Идите к двери!';
+          door.material.color.setHex(0x2ecc71);
+        }
+      }
+    });
+  }
+  function checkHiding() {
+    const pos = camera.position;
+    const closetDist = pos.distanceTo(new THREE.Vector3(-1.8, 0, 1.2));
+    const bedDist = pos.distanceTo(new THREE.Vector3(1.8, 0, 1.5));
+    if (closetDist < 0.8 || bedDist < 0.8) {
+      isHiding = true;
+      document.getElementById('statusText').innerHTML = '🕵️ Вы спрятались...';
+    } else {
+      isHiding = false;
+    }
+  }
+  function checkVictory() {
+    if (keysCollected === 3) {
+      const pos = camera.position;
+      if (pos.z < -2) {
+        isVictory = true;
+        document.getElementById('victory').style.display = 'flex';
+      }
+    }
+  }
+  function movePlayer(delta) {
+    if (isGameOver || isVictory) return;
+    const speed = 2.5;
+    const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    const moveVec = new THREE.Vector3();
+    moveVec.addScaledVector(forward, -moveZ * speed * delta);
+    moveVec.addScaledVector(right, moveX * speed * delta);
+    const newPos = camera.position.clone().add(moveVec);
+    if (Math.abs(newPos.x) < 2.3 && Math.abs(newPos.z) < 2.3 && newPos.y > 0.2) {
+      camera.position.copy(newPos);
+    }
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+    checkKeys();
+    checkHiding();
+    checkVictory();
+  }
+  function scheduleAnomaly() {
+    if (isGameOver || isVictory) return;
+    const delay = 30000 + Math.random() * 60000;
+    setTimeout(() => {
+      startAnomaly();
+      scheduleAnomaly();
+    }, delay);
+  }
+  scheduleAnomaly();
+  let lastTime = 0;
+  function animate(time) {
+    const delta = Math.min((time - lastTime) / 1000, 0.05);
+    lastTime = time;
+    movePlayer(delta);
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+  animate(0);
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'w') moveZ = -1;
+    if (e.key === 's') moveZ = 1;
+    if (e.key === 'a') moveX = -1;
+    if (e.key === 'd') moveX = 1;
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'w' || e.key === 's') moveZ = 0;
+    if (e.key === 'a' || e.key === 'd') moveX = 0;
+  });
+  document.addEventListener('mousemove', (e) => {
+    yaw += e.movementX * 0.002;
+    pitch = Math.max(-0.5, Math.min(0.5, pitch - e.movementY * 0.002));
+  });
+  document.addEventListener('click', () => { renderer.domElement.requestPointerLock?.(); });
+  </script>
+</body>
+  </html>
